@@ -30,3 +30,19 @@ jobs:
 
     - name: Build Client
       run: make client
+
+    # === 新增：打包 dist/ 目录 ===
+    - name: Archive dist
+      run: |
+        set -euxo pipefail
+        test -d dist
+        tar -czf "dist-${{ github.ref_name }}-${{ github.run_number }}.tar.gz" -C dist .
+
+    # === 新增：上传为制品 ===
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist-${{ github.ref_name }}-${{ github.run_number }}
+        path: dist-${{ github.ref_name }}-${{ github.run_number }}.tar.gz
+        if-no-files-found: error
+        retention-days: 14
