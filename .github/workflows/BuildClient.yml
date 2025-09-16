@@ -1,0 +1,112 @@
+name: Release AdaptixClient
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag name (e.g., v1.0.0)'
+        required: true
+        type: string
+      release_name:
+        description: 'Release name'
+        required: true
+        type: string
+      draft:
+        description: 'Create as draft release'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  QT_VERSION: '6.6.0'
+  CMAKE_VERSION: '3.28.0'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.event.inputs.tag_name }}
+        release_name: ${{ github.event.inputs.release_name }}
+        draft: ${{ github.event.inputs.draft }}
+        prerelease: ${{ github.event.inputs.prerelease }}
+
+  build-and-upload:
+    needs: create-release
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Fix CMakeLists.txt for MSVC
+      working-directory: AdaptixClient
+      run: |
+        # Replace GCC-style linker flags with MSVC-style for Windows builds
+        (Get-Content CMakeLists.txt) -replace 'set\(CMAKE_EXE_LINKER_FLAGS "\$\{CMAKE_EXE_LINKER_FLAGS\} -Wl,-subsystem,windows"\)', '# GCC linker flag removed for MSVC compatibility' | Set-Content CMakeLists.txt
+      shell: powershell
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: ${{ env.QT_VERSION }}
+        arch: win64_msvc2019_64
+        cache: true
+        modules: 'qtwebsockets'
+
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v1.14
+      with:
+        cmake-version: ${{ env.CMAKE_VERSION }}
+
+    - name: Configure and Build
+      working-directory: AdaptixClient
+      run: |
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A x64
+        cmake --build build --config Release
+    - name: Fix Windows Subsystem (Remove Console Window)
+      working-directory: AdaptixClient
+      run: |
+        # Use Developer Command Prompt to access editbin
+        $vsPath = "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        $exePath = "build\Release\AdaptixClient.exe"
+        cmd /c "`"$vsPath`" && editbin /SUBSYSTEM:WINDOWS `"$exePath`""
+      shell: powershell
+
+    - name: Verify executable subsystem
+      working-directory: AdaptixClient
+      run: |
+        # Use Developer Command Prompt to access dumpbin
+        $vsPath = "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        $exePath = "build\Release\AdaptixClient.exe"
+        cmd /c "`"$vsPath`" && dumpbin /headers `"$exePath`" | findstr subsystem"
+      shell: powershell
+
+    - name: Package Windows
+      working-directory: AdaptixClient
+      run: |
+        mkdir package
+        cp build/Release/AdaptixClient.exe package/
+        windeployqt package/AdaptixClient.exe --qmldir . --compiler-runtime
+        Compress-Archive -Path package/* -DestinationPath AdaptixClient-Windows-x64.zip
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: AdaptixClient/AdaptixClient-Windows-x64.zip
+        asset_name: AdaptixClient-Windows-x64.zip
+        asset_content_type: application/zip
